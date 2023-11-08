@@ -3,7 +3,7 @@
 
 use crate::{
     bindings::http::types::{self, Method, Scheme},
-    body::{HostIncomingBodyBuilder, HyperIncomingBody, HyperOutgoingBody},
+    body::{HostIncomingBody, HyperIncomingBody, HyperOutgoingBody},
 };
 use anyhow::Context;
 use http_body_util::BodyExt;
@@ -36,12 +36,11 @@ pub trait WasiHttpView: Send {
         req: hyper::Request<HyperIncomingBody>,
     ) -> wasmtime::Result<Resource<HostIncomingRequest>> {
         let (parts, body) = req.into_parts();
-        let body = HostIncomingBodyBuilder {
+        let body = HostIncomingBody::new(
             body,
-            worker: None,
             // TODO: this needs to be plumbed through
-            between_bytes_timeout: std::time::Duration::from_millis(600 * 1000),
-        };
+            std::time::Duration::from_millis(600 * 1000),
+        );
         Ok(self.table().push_resource(HostIncomingRequest {
             parts,
             body: Some(body),
@@ -201,7 +200,7 @@ fn invalid_url(e: std::io::Error) -> anyhow::Error {
 
 pub struct HostIncomingRequest {
     pub parts: http::request::Parts,
-    pub body: Option<HostIncomingBodyBuilder>,
+    pub body: Option<HostIncomingBody>,
 }
 
 pub struct HostResponseOutparam {
@@ -221,7 +220,7 @@ pub struct HostOutgoingRequest {
 pub struct HostIncomingResponse {
     pub status: u16,
     pub headers: FieldMap,
-    pub body: Option<HostIncomingBodyBuilder>,
+    pub body: Option<HostIncomingBody>,
     pub worker: Arc<AbortOnDropJoinHandle<anyhow::Result<()>>>,
 }
 
