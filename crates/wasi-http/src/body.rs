@@ -451,6 +451,23 @@ impl HostOutgoingBody {
 pub struct BodyWriteStream {
     writer: mpsc::Sender<Bytes>,
     write_budget: usize,
+
+    // Compatibility quirk for Wasmtime 14.0.x. That release of Wasmtime used a
+    // separate task to manage writes which meant that failures from flush/write
+    // were delayed and seeing "closed" was delayed as well. This is here to get
+    // some tests working in Spin. Specifically outbound HTTP requests in the
+    // Spin 2.0.0 SDK Rust SDK with no body will call `check-write`, then
+    // `flush`, then `check-write` again. Without this quirk the first call to
+    // `check-write` will fail when the upstream origin closes the body and
+    // doesn't accept anything, meaning that the first `check-write` returns
+    // `StreamError::Closed`. While spec-compliant this differs from Wasmtime
+    // 14.0.x where `Ok(n)` was returned instead. This is because in 14.0.x the
+    // realization that the stream was closed was delayed.
+    //
+    // Here this quirk will force `flush` and `check-write` to pretend
+    // everything is ready unless bytes are written, at which point everything
+    // proceeds as if this weren't here.
+    wrote_anything: bool,
 }
 
 impl BodyWriteStream {
@@ -461,6 +478,7 @@ impl BodyWriteStream {
         BodyWriteStream {
             writer,
             write_budget,
+            wrote_anything: false,
         }
     }
 }
@@ -468,6 +486,7 @@ impl BodyWriteStream {
 #[async_trait::async_trait]
 impl HostOutputStream for BodyWriteStream {
     fn write(&mut self, bytes: Bytes) -> Result<(), StreamError> {
+        self.wrote_anything = true;
         match self.writer.try_send(bytes) {
             // If the message was sent then it's queued up now in hyper to get
             // received.
@@ -488,7 +507,7 @@ impl HostOutputStream for BodyWriteStream {
     fn flush(&mut self) -> Result<(), StreamError> {
         // Flushing doesn't happen in this body stream since we're currently
         // only tracking sending bytes over to hyper.
-        if self.writer.is_closed() {
+        if self.wrote_anything && self.writer.is_closed() {
             Err(StreamError::Closed)
         } else {
             Ok(())
@@ -496,7 +515,7 @@ impl HostOutputStream for BodyWriteStream {
     }
 
     fn check_write(&mut self) -> Result<usize, StreamError> {
-        if self.writer.is_closed() {
+        if self.wrote_anything && self.writer.is_closed() {
             Err(StreamError::Closed)
         } else if self.writer.capacity() == 0 {
             // If there is no more capacity in this sender channel then don't
